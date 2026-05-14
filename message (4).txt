@@ -5,59 +5,55 @@ local UserInputService = game:GetService("UserInputService")
 local CoreGui = game:GetService("CoreGui")
 local lp = Players.LocalPlayer
 
+-- ── HELPERS ───────────────────────────────────────────────────────────────────
+local function FloatToInt(f)
+    local i = 0
+    local s = string.pack("f", f)
+    for k = 1, #s do
+        i = i + string.byte(s, k) * (256 ^ (k - 1))
+    end
+    return i
+end
+
 -- ── CONFIG ────────────────────────────────────────────────────────────────────
 local Config = {
-    UpdateDistance = 15, -- How far you can walk before server pos updates
-    SyncTime = 4, -- Max time before server pos updates (seconds)
-    MarkerColor = Color3.fromRGB(255, 50, 50),
+    SyncDist = 20, -- How far you walk before server updates
+    MarkerColor = Color3.fromRGB(255, 60, 60),
     BeamColor = Color3.fromRGB(0, 220, 255),
 }
 
 -- ── STATE ─────────────────────────────────────────────────────────────────────
 local State = {
     Active = false,
-    RealPos = Vector3.new(0,0,0),
     ServerPos = Vector3.new(0,0,0),
-    LastUpdate = 0,
-    LastSyncTime = 0,
+    LastSync = 0,
 }
 
--- ── RAKNET HOOK (The Magic) ───────────────────────────────────────────────────
--- This intercepts the packet that tells the server where you are
+-- ── RAKNET HOOK (THE REAL MAGIC) ──────────────────────────────────────────────
 local function desync_send(packet)
     if not State.Active then return end
-    -- 0x1B is usually the CFrame/Position packet in Roblox
-    if packet.PacketId ~= 0x1B then return end 
-    
-    -- Only spoof occasionally to save performance
-    if tick() - State.LastUpdate < 0.1 then return end
-    State.LastUpdate = tick()
+    if packet.PacketId ~= 0x1B then return end -- 0x1B is CFrame update
+
+    -- Only send fake packet if we've moved far enough or enough time passed
+    local char = lp.Character
+    if not char then return end
+    local dist = (char.HumanoidRootPart.Position - State.ServerPos).Magnitude
+    if dist < 5 and tick() - State.LastSync < 0.5 then return end
 
     local b = packet.AsBuffer
     if b and buffer.len(b) >= 40 then
-        -- We overwrite the CFrame data in the packet with our "fake" ServerPos
-        -- This makes the server think we are standing still at ServerPos
-        
-        -- Write Fake X, Y, Z (Offsets 1, 5, 9 are common for CFrame coords)
-        buffer.writefloat(b, 1, State.ServerPos.X)
-        buffer.writefloat(b, 5, State.ServerPos.Y)
-        buffer.writefloat(b, 9, State.ServerPos.Z)
-        
-        -- We could also write the full CFrame matrix here for 100% accuracy
+        -- Overwrite X, Y, Z in the packet buffer
+        -- Offsets 1, 5, 9 are standard for CFrame coords in this packet
+        buffer.writeu32(b, 1, FloatToInt(State.ServerPos.X))
+        buffer.writeu32(b, 5, FloatToInt(State.ServerPos.Y))
+        buffer.writeu32(b, 9, FloatToInt(State.ServerPos.Z))
         packet:SetData(b)
     end
 end
 
--- Safely add the hook
-pcall(function()
-    if raknet then
-        raknet.add_send_hook(desync_send)
-    else
-        warn("[kryo] RakNet not found, desync may not work.")
-    end
-end)
+if raknet then raknet.add_send_hook(desync_send) end
 
--- ── 3D MARKER & BEAM ──────────────────────────────────────────────────────────
+-- ── 3D VISUALS (MARKER + BEAM) ────────────────────────────────────────────────
 local Marker = Instance.new("Part")
 Marker.Name = "DesyncMarker"
 Marker.Size = Vector3.new(2, 0.2, 2)
@@ -70,82 +66,91 @@ Marker.CanTouch = false
 Marker.Parent = workspace
 
 local Billboard = Instance.new("BillboardGui")
-Billboard.Size = UDim2.new(0, 100, 0, 40)
+Billboard.Size = UDim2.new(0, 120, 0, 40)
 Billboard.StudsOffset = Vector3.new(0, 3, 0)
 Billboard.AlwaysOnTop = true
 Billboard.Parent = Marker
 
-local Label = Instance.new("TextLabel", Billboard)
-Label.Size = UDim2.new(1, 0, 1, 0)
-Label.BackgroundTransparency = 1
-Label.TextColor3 = Color3.new(1,1,1)
-Label.TextStrokeTransparency = 0.5
-Label.Font = Enum.Font.GothamBold
-Label.Text = "SERVER"
+local Lbl = Instance.new("TextLabel", Billboard)
+Lbl.Size = UDim2.new(1, 0, 1, 0)
+Lbl.BackgroundTransparency = 1
+Lbl.Text = "SERVER POS"
+Lbl.TextColor3 = Color3.new(1,1,1)
+Lbl.TextStrokeTransparency = 0.5
+Lbl.Font = Enum.Font.GothamBold
+Lbl.TextSize = 14
 
 local Beam = Instance.new("Beam")
 Beam.Color = ColorSequence.new(Config.BeamColor)
-Beam.Width0 = 0.2
-Beam.Width1 = 0.2
+Beam.Width0 = 0.3
+Beam.Width1 = 0.3
 Beam.FaceCamera = true
-local A0 = Instance.new("Attachment", Marker)
-local A1 = Instance.new("Attachment", lp.Character or lp.CharacterAdded:Wait())
-Beam.Attachment0 = A0
-Beam.Attachment1 = A1
 Beam.Parent = Marker
 
--- Update beam attachment when character respawns
-lp.CharacterAdded:Connect(function(c)
-    A1.Parent = c:WaitForChild("HumanoidRootPart")
-    Beam.Attachment1 = A1
-end)
+local Att0 = Instance.new("Attachment", Marker)
+local Att1 = Instance.new("Attachment") -- We parent this to char later
+Beam.Attachment0 = Att0
+Beam.Attachment1 = Att1
 
--- ── UI CREATION (Mobile Friendly) ─────────────────────────────────────────────
+-- ── UI (MOBILE OPTIMIZED) ─────────────────────────────────────────────────────
 local Gui = Instance.new("ScreenGui", CoreGui)
 Gui.Name = "KryoDesync"
 Gui.ResetOnSpawn = false
 
 local Main = Instance.new("Frame", Gui)
 Main.Name = "Main"
-Main.Size = UDim2.new(0, 240, 0, 320)
-Main.Position = UDim2.new(0.5, -120, 0.5, -160)
-Main.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+Main.Size = UDim2.new(0, 260, 0, 340)
+Main.Position = UDim2.new(0.5, -130, 0.5, -170)
+Main.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
 Main.BorderSizePixel = 0
-Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 10)
+Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 12)
 Instance.new("UIStroke", Main).Color = Color3.fromRGB(40, 40, 50)
 
--- Helper to make buttons
-local function makeBtn(text, yPos, color, callback)
-    local btn = Instance.new("TextButton", Main)
-    btn.Size = UDim2.new(0.9, 0, 0, 40)
-    btn.Position = UDim2.new(0.05, 0, 0, yPos)
-    btn.BackgroundColor3 = color
-    btn.Text = text
-    btn.TextColor3 = Color3.new(1,1,1)
-    btn.Font = Enum.Font.GothamBold
-    btn.TextSize = 14
-    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
-    
-    -- Touch feedback
-    btn.MouseButton1Down:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.1), {Size = UDim2.new(0.85, 0, 0, 38)}):Play()
-    end)
-    btn.MouseButton1Up:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.1), {Size = UDim2.new(0.9, 0, 0, 40)}):Play()
-        callback()
-    end)
-    return btn
+-- Dragging Vars
+local dragging, dragStart, startPos
+Main.InputBegan:Connect(function(inp)
+    if inp.UserInputType == Enum.UserInputType.Touch or inp.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = true
+        dragStart = inp.Position
+        startPos = Main.Position
+    end
+end)
+Main.InputEnded:Connect(function(inp)
+    if inp.UserInputType == Enum.UserInputType.Touch or inp.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = false
+    end
+end)
+UserInputService.InputChanged:Connect(function(inp)
+    if dragging and (inp.UserInputType == Enum.UserInputType.Touch or inp.UserInputType == Enum.UserInputType.MouseMovement) then
+        local delta = inp.Position - dragStart
+        Main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
+
+-- Helper for buttons
+local function makeBtn(text, y, color, callback)
+    local b = Instance.new("TextButton", Main)
+    b.Size = UDim2.new(0.9, 0, 0, 40)
+    b.Position = UDim2.new(0.05, 0, 0, y)
+    b.BackgroundColor3 = color
+    b.Text = text
+    b.TextColor3 = Color3.new(1,1,1)
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 14
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
+    b.MouseButton1Click:Connect(callback)
+    return b
 end
 
--- Toggle Helper
-local function makeToggle(text, yPos, def, callback)
+-- Helper for toggles
+local function makeToggle(text, y, def, callback)
     local row = Instance.new("Frame", Main)
     row.Size = UDim2.new(0.9, 0, 0, 35)
-    row.Position = UDim2.new(0.05, 0, 0, yPos)
+    row.Position = UDim2.new(0.05, 0, 0, y)
     row.BackgroundTransparency = 1
     
     local lbl = Instance.new("TextLabel", row)
-    lbl.Size = UDim2.new(0.6, 0, 1, 0)
+    lbl.Size = UDim2.new(0.7, 0, 1, 0)
     lbl.BackgroundTransparency = 1
     lbl.Text = text
     lbl.TextColor3 = Color3.new(1,1,1)
@@ -163,114 +168,92 @@ local function makeToggle(text, yPos, def, callback)
     btn.TextSize = 12
     Instance.new("UICorner", btn).CornerRadius = UDim.new(1, 0)
     
-    local active = def
+    local on = def
     btn.MouseButton1Click:Connect(function()
-        active = not active
-        btn.BackgroundColor3 = active and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(60, 60, 60)
-        btn.Text = active and "ON" or "OFF"
-        callback(active)
+        on = not on
+        btn.BackgroundColor3 = on and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(60, 60, 60)
+        btn.Text = on and "ON" or "OFF"
+        callback(on)
     end)
 end
 
--- ── UI ELEMENTS ───────────────────────────────────────────────────────────────
-makeToggle("Enable Desync", 10, false, function(v) 
-    State.Active = v 
+-- UI Elements
+makeToggle("Enable Desync", 10, false, function(v)
+    State.Active = v
     if v then
         State.ServerPos = lp.Character.HumanoidRootPart.Position
-        State.LastSyncTime = tick()
+        State.LastSync = tick()
+        Marker.Transparency = 0
+        Billboard.Enabled = true
+        Beam.Enabled = true
+    else
+        Marker.Transparency = 1
+        Billboard.Enabled = false
+        Beam.Enabled = false
     end
 end)
 
-makeToggle("Show Marker", 55, true, function(v) Marker.Transparency = v and 0 or 1 end)
+makeToggle("Show Marker/Beam", 50, true, function(v)
+    Marker.Transparency = v and 0 or 1
+    Billboard.Enabled = v
+    Beam.Enabled = v
+end)
 
-makeBtn("🔄 ROLLBACK TO SERVER", 100, Color3.fromRGB(50, 100, 255), function()
+makeBtn("🔄 ROLLBACK TO SERVER", 95, Color3.fromRGB(40, 100, 255), function()
     if lp.Character then
-        lp.Character.HumanoidRootPart.CFrame = CFrame.new(State.ServerPos)
+        -- Flash effect
+        local flash = Instance.new("Highlight", lp.Character)
+        flash.FillColor = Color3.new(1,1,1)
+        flash.OutlineColor = Color3.new(1,1,1)
+        game:GetService("Debris"):AddItem(flash, 0.2)
+        
+        -- Teleport
+        lp.Character:PivotTo(CFrame.new(State.ServerPos))
     end
 end)
 
-makeBtn("📍 SET SERVER = ME", 150, Color3.fromRGB(150, 50, 200), function()
+makeBtn("📍 SET SERVER = ME", 145, Color3.fromRGB(150, 50, 200), function()
     if lp.Character then
         State.ServerPos = lp.Character.HumanoidRootPart.Position
-        State.LastSyncTime = tick()
+        State.LastSync = tick()
     end
 end)
 
-local InfoLbl = Instance.new("TextLabel", Main)
-InfoLbl.Size = UDim2.new(1, 0, 0, 30)
-InfoLbl.Position = UDim2.new(0, 0, 1, -30)
-InfoLbl.BackgroundTransparency = 1
-InfoLbl.TextColor3 = Color3.fromRGB(150, 150, 150)
-InfoLbl.Font = Enum.Font.Gotham
-InfoLbl.TextSize = 12
-InfoLbl.Text = "Waiting..."
-
--- ── DRAGGABLE LOGIC ───────────────────────────────────────────────────────────
-local dragging, dragInput, dragStart, startPos
-Main.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
-        dragging = true
-        dragStart = input.Position
-        startPos = Main.Position
-        
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then
-                dragging = false
-            end
-        end)
-    end
-end)
-
-Main.InputChanged:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement then
-        dragInput = input
-    end
-end)
-
-UserInputService.InputChanged:Connect(function(input)
-    if input == dragInput and dragging then
-        local delta = input.Position - dragStart
-        Main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-    end
-end)
+local Info = Instance.new("TextLabel", Main)
+Info.Size = UDim2.new(1, 0, 0, 30)
+Info.Position = UDim2.new(0, 0, 1, -30)
+Info.BackgroundTransparency = 1
+Info.TextColor3 = Color3.fromRGB(150, 150, 150)
+Info.Font = Enum.Font.Gotham
+Info.TextSize = 12
+Info.Text = "Waiting..."
 
 -- ── MAIN LOOP ─────────────────────────────────────────────────────────────────
 RunService.Heartbeat:Connect(function()
-    if not State.Active or not lp.Character then return end
-    local hrp = lp.Character:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
-
-    State.RealPos = hrp.Position
+    local char = lp.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
     
-    -- 1. Update Logic (The "Halfway" effect)
-    local dist = (State.RealPos - State.ServerPos).Magnitude
-    local timePassed = tick() - State.LastSyncTime
-    
-    if dist >= Config.UpdateDistance or timePassed >= Config.SyncTime then
-        State.ServerPos = State.RealPos
-        State.LastSyncTime = tick()
-        -- Visual flash
-        Marker.Size = Vector3.new(3, 0.2, 3)
-        TweenService:Create(Marker, TweenInfo.new(0.2), {Size = Vector3.new(2, 0.2, 2)}):Play()
+    -- Update Visuals
+    if State.Active and hrp then
+        -- 1. Update Beam Attachment
+        if Att1.Parent ~= hrp then Att1.Parent = hrp end
+        
+        -- 2. Update Marker Position
+        Marker.CFrame = CFrame.new(State.ServerPos)
+        
+        -- 3. Check Distance for Sync
+        local dist = (hrp.Position - State.ServerPos).Magnitude
+        Info.Text = string.format("Dist: %d studs", math.floor(dist))
+        
+        if dist >= Config.SyncDist or tick() - State.LastSync >= 5 then
+            State.ServerPos = hrp.Position
+            State.LastSync = tick()
+            
+            -- Visual pop
+            Marker.Size = Vector3.new(4, 0.2, 4)
+            TweenService:Create(Marker, TweenInfo.new(0.2), {Size = Vector3.new(2, 0.2, 2)}):Play()
+        end
     end
-
-    -- 2. Update 3D Elements
-    Marker.CFrame = CFrame.new(State.ServerPos)
-    A1.CFrame = hrp.CFrame -- Keep beam attached to player
-    
-    -- 3. Update UI Info
-    local distFloor = math.floor(dist)
-    InfoLbl.Text = string.format("Real Dist: %d studs", distFloor)
-    
-    -- Color code distance
-    if distFloor > 50 then InfoLbl.TextColor3 = Color3.fromRGB(255, 100, 100)
-    elseif distFloor > 20 then InfoLbl.TextColor3 = Color3.fromRGB(255, 200, 100)
-    else InfoLbl.TextColor3 = Color3.fromRGB(100, 255, 150) end
 end)
 
--- Cleanup
-lp.CharacterRemoving:Connect(function()
-    State.Active = false
-end)
-
-print("[kryo desync] loaded. Enable via UI.")
+print("[kryo desync] Fixed version loaded.")
