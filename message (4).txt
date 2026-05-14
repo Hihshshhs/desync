@@ -1,176 +1,707 @@
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local TweenService = game:GetService("TweenService")
+-- kryo x kryz desync — auto-exec enabled
+-- Writes itself to autoexec/ on first run so it loads automatically next launch.
+if writefile and not (isfile and isfile("autoexec/kryo_x_kryz_desync.lua")) then
+    local _src = [[
+-- kryo x kryz desync — GUI matches RY_HUB style
+-- discord.gg/9F5GdEWT
+
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local TweenService     = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
+local HttpService      = game:GetService("HttpService")
+local CoreGui          = game:GetService("CoreGui")
+local lp               = Players.LocalPlayer
 
-local player = Players.LocalPlayer
-local character = player.Character or player.CharacterAdded:Wait()
-local hrp = character:WaitForChild("HumanoidRootPart")
+if _G.KryoCleanup then pcall(_G.KryoCleanup) end
+task.wait(0.1)
 
--- CONFIG
-local DESYNC_ENABLED = false
-local UPDATE_DISTANCE = 50
-local FREEZE_AT_HALFWAY = true
+-- ── RY HUB matching theme ─────────────────────────────────────────────────────
+local Theme = {
+    Background       = Color3.fromRGB(15, 15, 20),
+    Surface          = Color3.fromRGB(22, 22, 30),
+    SurfaceHighlight = Color3.fromRGB(35, 35, 45),
+    Accent1          = Color3.fromRGB(0, 225, 255),
+    Accent2          = Color3.fromRGB(180, 0, 255),
+    TextPrimary      = Color3.fromRGB(240, 240, 240),
+    TextSecondary    = Color3.fromRGB(140, 140, 150),
+    Success          = Color3.fromRGB(30, 150, 90),
+    Error            = Color3.fromRGB(255, 60, 80),
+}
 
--- VARIABLES
-local realPosition = hrp.Position
-local fakePosition = hrp.Position
-local destination = nil
-local isMoving = false
+-- ── Config / State ────────────────────────────────────────────────────────────
+local Config = {
+    SyncInterval  = 20,
+    TimeInterval  = 3,
+    AnimsDisabled = false,
+    SavedPos      = nil,
+}
 
--- MARKER (server‑visible)
-local marker = Instance.new("Part")
-marker.Name = "DesyncMarker"
-marker.Shape = Enum.PartShape.Ball
-marker.Size = Vector3.new(4, 4, 4)
-marker.BrickColor = BrickColor.new("Bright red")
-marker.Material = Enum.Material.Neon
-marker.Anchored = true
-marker.CanCollide = false
-marker.Transparency = 0.4
-marker.Parent = workspace
+local State = {
+    desync_active   = false,
+    frozenPos       = Vector3.new(0,0,0),
+    distanceCounter = 0,
+    lastSyncTime    = 0,
+    lastPulse       = 0,
+}
 
--- UI (Mobile‑first ScreenGui)
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "DesyncMobileUI"
-screenGui.ResetOnSpawn = false
-screenGui.Parent = player:WaitForChild("PlayerGui")
+local Connections = {}
+local function track(c) Connections[#Connections+1] = c; return c end
 
--- Main frame (mobile sized)
-local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 240, 0, 160)
-frame.Position = UDim2.new(0.5, -120, 0.85, 0) -- bottom‑center on mobile
-frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-frame.BorderSizePixel = 0
-frame.Parent = screenGui
-
--- Title
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, 0, 0, 28)
-title.BackgroundTransparency = 1
-title.Text = "DESYNC CONTROLS"
-title.TextColor3 = Color3.fromRGB(255, 255, 255)
-title.Font = Enum.Font.GothamBold
-title.TextSize = 16
-title.Parent = frame
-
--- Status label
-local statusLabel = Instance.new("TextLabel")
-statusLabel.Size = UDim2.new(1, 0, 0, 28)
-statusLabel.Position = UDim2.new(0, 0, 0, 35)
-statusLabel.BackgroundTransparency = 1
-statusLabel.Text = "Status: DISABLED"
-statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
-statusLabel.Font = Enum.Font.Gotham
-statusLabel.TextSize = 14
-statusLabel.TextXAlignment = Enum.TextXAlignment.Left
-statusLabel.Parent = frame
-
--- Toggle button (touch area)
-local toggleBtn = Instance.new("TextButton")
-toggleBtn.Size = UDim2.new(1, 0, 0, 36)
-toggleBtn.Position = UDim2.new(0, 0, 0, 70)
-toggleBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
-toggleBtn.Text = "TOGGLE DESYNC"
-toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-toggleBtn.Font = Enum.Font.GothamBold
-toggleBtn.TextSize = 15
-toggleBtn.Parent = frame
-
--- Rollback button (touch area)
-local rollbackBtn = Instance.new("TextButton")
-rollbackBtn.Size = UDim2.new(1, 0, 0, 36)
-rollbackBtn.Position = UDim2.new(0, 0, 0, 112)
-rollbackBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-rollbackBtn.Text = "ROLLBACK TO SERVER POS"
-rollbackBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-rollbackBtn.Font = Enum.Font.GothamBold
-rollbackBtn.TextSize = 14
-rollbackBtn.Parent = frame
-
--- Helper: update marker (always at fake pos)
-local function updateMarker()
-    marker.CFrame = CFrame.new(fakePosition)
-end
-
--- Helper: set fake position
-local function setFakePosition(pos)
-    fakePosition = pos
-    hrp:SetNetworkOwner(nil)
-    hrp.CFrame = CFrame.new(fakePosition)
-    hrp:SetNetworkOwner(player)
-    updateMarker()
-end
-
--- Helper: update status UI
-local function updateStatus(enabled)
-    DESYNC_ENABLED = enabled
-    statusLabel.Text = "Status: " .. (enabled and "ENABLED" or "DISABLED")
-    statusLabel.TextColor3 = enabled and Color3.fromRGB(100, 255, 100) or Color3.fromRGB(255, 100, 100)
-    toggleBtn.Text = enabled and "DISABLE DESYNC" or "ENABLE DESYNC"
-    toggleBtn.BackgroundColor3 = enabled and Color3.fromRGB(150, 50, 50) or Color3.fromRGB(100, 100, 100)
-end
-
--- Update desync loop
-local function updateDesync()
-    if not DESYNC_ENABLED then return end
-    
-    local currentPos = hrp.Position
-    local distance = (currentPos - realPosition).Magnitude
-    
-    if distance >= UPDATE_DISTANCE then
-        if FREEZE_AT_HALFWAY and destination then
-            local halfway = (realPosition + destination) / 2
-            setFakePosition(halfway)
-        else
-            setFakePosition(currentPos)
+-- ── Settings save ─────────────────────────────────────────────────────────────
+local SAVE_FILE = "kryo_x_kryz_config.json"
+pcall(function()
+    local d = HttpService:JSONDecode(readfile(SAVE_FILE))
+    if type(d) == "table" then
+        Config.AnimsDisabled = d.AnimsDisabled == true
+        if d.SavedPos then
+            Config.SavedPos = UDim2.new(d.SavedPos.xs, d.SavedPos.xo, d.SavedPos.ys, d.SavedPos.yo)
         end
-        realPosition = currentPos
+    end
+end)
+
+local mainFrame -- forward decl for saveSettings
+local function saveSettings()
+    pcall(function()
+        local p = mainFrame and mainFrame.Position
+        writefile(SAVE_FILE, HttpService:JSONEncode({
+            AnimsDisabled = Config.AnimsDisabled,
+            SavedPos = p and {xs=p.X.Scale,xo=p.X.Offset,ys=p.Y.Scale,yo=p.Y.Offset} or nil,
+        }))
+    end)
+end
+
+-- ── Core desync helpers ───────────────────────────────────────────────────────
+local function forceSync()
+    local c = lp.Character; local h = c and c:FindFirstChild("HumanoidRootPart"); if not h then return end
+    local rj = h:FindFirstChild("RootJoint"); if rj then rj:SetAttribute("Sync", tick()) end
+    pcall(function() h.CFrame = h.CFrame * CFrame.new(0,0,0) end)
+end
+
+local function ghostify()
+    local c = lp.Character; if not c then return end
+    for _, p in ipairs(c:GetChildren()) do
+        if p:IsA("BasePart") then p.CanQuery = false; p.CanTouch = false end
     end
 end
 
--- MAIN LOOP
-RunService.Heartbeat:Connect(function()
-    if not character or not hrp then return end
-    
-    local humanoid = character:FindFirstChild("Humanoid")
-    if humanoid and humanoid.MoveDirection.Magnitude > 0 then
-        isMoving = true
-        destination = hrp.Position + (humanoid.MoveDirection * 100)
-        updateDesync()
-    else
-        isMoving = false
-    end
-end)
-
--- MOBILE TOUCH HANDLING (no keybinds)
-toggleBtn.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch then
-        updateStatus(not DESYNC_ENABLED)
-    end
-end)
-
-rollbackBtn.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch then
-        if not DESYNC_ENABLED then
-            statusLabel.Text = "Rollback: No desync active"
-            wait(2)
-            statusLabel.Text = "Status: DISABLED"
-            return
+local function disableAnimations()
+    local c = lp.Character; if not c then return end
+    local a = c:FindFirstChild("Animate"); if a then a.Disabled = true end
+    local hum = c:FindFirstChildOfClass("Humanoid")
+    if hum then
+        local anim = hum:FindFirstChildOfClass("Animator")
+        if anim then
+            for _, t in pairs(anim:GetPlayingAnimationTracks()) do pcall(function() t:Stop(0) end) end
+            anim:Destroy(); Instance.new("Animator").Parent = hum
         end
-        
-        -- Force fake position to match real position (server sees you)
-        setFakePosition(realPosition)
-        updateStatus(false)
-        statusLabel.Text = "Rollback: Position synced to server"
-        wait(2)
-        statusLabel.Text = "Status: DISABLED"
+    end
+end
+
+local function enableAnimations()
+    local c = lp.Character; if not c then return end
+    local a = c:FindFirstChild("Animate"); if a then a.Disabled = false end
+end
+
+-- ── raknet hook ───────────────────────────────────────────────────────────────
+local function desync_send(packet)
+    if not State.desync_active then return end
+    if packet.PacketId ~= 0x1B then return end
+    if tick() - State.lastPulse > 5 then State.lastPulse = tick(); return end
+    local b = packet.AsBuffer
+    if b and buffer.len(b) >= 13 then
+        buffer.writeu32(b,1,0xFFFFFFFF); buffer.writeu32(b,5,0xFFFFFFFF); buffer.writeu32(b,9,0xFFFFFFFF)
+        packet:SetData(b)
+    end
+end
+pcall(function() raknet.add_send_hook(desync_send) end)
+
+local function startDesync()
+    local h = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart"); if not h then return end
+    State.desync_active=true; State.frozenPos=h.Position
+    State.distanceCounter=0; State.lastSyncTime=tick(); State.lastPulse=tick()
+    if Config.AnimsDisabled then disableAnimations() end
+end
+
+track(lp.CharacterAdded:Connect(function()
+    State.desync_active = false; task.wait(0.5); startDesync()
+end))
+if lp.Character then task.spawn(function() task.wait(0.3); startDesync() end) end
+
+-- ── GUI — matching RY_HUB exactly ────────────────────────────────────────────
+local old = CoreGui:FindFirstChild("KryoXKryzDesync"); if old then old:Destroy() end
+local sg = Instance.new("ScreenGui")
+sg.Name="KryoXKryzDesync"; sg.ResetOnSpawn=false; sg.DisplayOrder=999
+sg.ZIndexBehavior=Enum.ZIndexBehavior.Sibling; sg.Parent=CoreGui
+
+-- Main frame — same dark background as RY_HUB panels
+mainFrame = Instance.new("Frame", sg)
+mainFrame.Name = "MainWindow"
+mainFrame.Size = UDim2.new(0, 300, 0, 210)
+mainFrame.Position = Config.SavedPos or UDim2.new(0.5, -150, 0.1, 0)
+mainFrame.BackgroundColor3 = Theme.Background
+mainFrame.BackgroundTransparency = 0.05
+mainFrame.BorderSizePixel = 0
+mainFrame.ClipsDescendants = true
+Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 12)
+local mStroke = Instance.new("UIStroke", mainFrame)
+mStroke.Thickness=1.5; mStroke.Color=Theme.Accent2; mStroke.Transparency=0.35
+
+-- Header bar — same style as RY_HUB title bars
+local header = Instance.new("Frame", mainFrame)
+header.Name="Header"; header.Size=UDim2.new(1,0,0,42)
+header.BackgroundColor3=Theme.Surface; header.BackgroundTransparency=0; header.BorderSizePixel=0
+Instance.new("UICorner", header).CornerRadius=UDim.new(0,12)
+-- square bottom corners on header
+local hFix=Instance.new("Frame",header); hFix.Size=UDim2.new(1,0,0,12)
+hFix.Position=UDim2.new(0,0,1,-12); hFix.BackgroundColor3=Theme.Surface; hFix.BorderSizePixel=0
+
+-- Accent gradient bar under header (matches RY_HUB notification bar style)
+local accentBar = Instance.new("Frame", mainFrame)
+accentBar.Size=UDim2.new(1,0,0,2); accentBar.Position=UDim2.new(0,0,0,42)
+accentBar.BackgroundColor3=Theme.Accent1; accentBar.BorderSizePixel=0
+local accentGrad=Instance.new("UIGradient",accentBar)
+accentGrad.Color=ColorSequence.new{
+    ColorSequenceKeypoint.new(0,Theme.Accent2),
+    ColorSequenceKeypoint.new(1,Theme.Accent1),
+}; accentGrad.Rotation=0
+
+-- Title dot + label
+local titleDot=Instance.new("Frame",header)
+titleDot.Size=UDim2.fromOffset(8,8); titleDot.Position=UDim2.new(0,12,0.5,-4)
+titleDot.BackgroundColor3=Theme.Accent1; titleDot.BorderSizePixel=0
+Instance.new("UICorner",titleDot).CornerRadius=UDim.new(1,0)
+
+local titleLbl=Instance.new("TextLabel",header)
+titleLbl.Size=UDim2.new(1,-80,1,0); titleLbl.Position=UDim2.new(0,26,0,0)
+titleLbl.BackgroundTransparency=1; titleLbl.Text="kryo x kryz desync"
+titleLbl.Font=Enum.Font.GothamBlack; titleLbl.TextSize=13
+titleLbl.TextColor3=Theme.TextPrimary; titleLbl.TextXAlignment=Enum.TextXAlignment.Left
+
+-- Close button — same style as RY_HUB
+local closeBtn=Instance.new("TextButton",header)
+closeBtn.Size=UDim2.fromOffset(22,22); closeBtn.Position=UDim2.new(1,-30,0.5,-11)
+closeBtn.BackgroundColor3=Theme.SurfaceHighlight; closeBtn.Text="✕"
+closeBtn.Font=Enum.Font.GothamBold; closeBtn.TextSize=11
+closeBtn.TextColor3=Theme.TextSecondary; closeBtn.AutoButtonColor=false
+Instance.new("UICorner",closeBtn).CornerRadius=UDim.new(1,0)
+closeBtn.MouseEnter:Connect(function() closeBtn.BackgroundColor3=Theme.Error; closeBtn.TextColor3=Color3.new(1,1,1) end)
+closeBtn.MouseLeave:Connect(function() closeBtn.BackgroundColor3=Theme.SurfaceHighlight; closeBtn.TextColor3=Theme.TextSecondary end)
+closeBtn.MouseButton1Click:Connect(function() sg.Enabled=false end)
+
+-- Drag
+local _drag,_dm,_ds=false,nil,nil
+header.InputBegan:Connect(function(i)
+    if i.UserInputType==Enum.UserInputType.MouseButton1 then
+        _drag=true; _dm=i.Position; _ds=mainFrame.Position
+    end
+end)
+track(UserInputService.InputChanged:Connect(function(i)
+    if _drag and i.UserInputType==Enum.UserInputType.MouseMovement then
+        local d=i.Position-_dm
+        mainFrame.Position=UDim2.new(_ds.X.Scale,_ds.X.Offset+d.X,_ds.Y.Scale,_ds.Y.Offset+d.Y)
+    end
+end))
+track(UserInputService.InputEnded:Connect(function(i)
+    if i.UserInputType==Enum.UserInputType.MouseButton1 and _drag then _drag=false; saveSettings() end
+end))
+
+-- Content area
+local content=Instance.new("Frame",mainFrame)
+content.Size=UDim2.new(1,-20,1,-58); content.Position=UDim2.new(0,10,0,50)
+content.BackgroundTransparency=1; content.BorderSizePixel=0
+local cLayout=Instance.new("UIListLayout",content)
+cLayout.Padding=UDim.new(0,6); cLayout.SortOrder=Enum.SortOrder.LayoutOrder
+
+-- Helper: RY_HUB style row
+local function makeRow(h, order)
+    local r=Instance.new("Frame",content)
+    r.Size=UDim2.new(1,0,0,h); r.BackgroundColor3=Theme.Surface
+    r.BackgroundTransparency=0; r.BorderSizePixel=0; r.LayoutOrder=order
+    Instance.new("UICorner",r).CornerRadius=UDim.new(0,8)
+    local rs=Instance.new("UIStroke",r); rs.Color=Theme.SurfaceHighlight; rs.Thickness=1; rs.Transparency=0.5
+    return r
+end
+
+-- Status row
+local statusRow=makeRow(36,1)
+local statusDot=Instance.new("Frame",statusRow)
+statusDot.Size=UDim2.fromOffset(8,8); statusDot.Position=UDim2.new(0,12,0.5,-4)
+statusDot.BackgroundColor3=Theme.Error; statusDot.BorderSizePixel=0
+Instance.new("UICorner",statusDot).CornerRadius=UDim.new(1,0)
+local statusLbl=Instance.new("TextLabel",statusRow)
+statusLbl.Size=UDim2.new(1,-30,1,0); statusLbl.Position=UDim2.new(0,28,0,0)
+statusLbl.BackgroundTransparency=1; statusLbl.Text="DESYNC: OFF"
+statusLbl.Font=Enum.Font.GothamBold; statusLbl.TextSize=13
+statusLbl.TextColor3=Theme.TextSecondary; statusLbl.TextXAlignment=Enum.TextXAlignment.Left
+
+-- Ghost row
+local ghostRow=makeRow(30,2)
+local gDot=Instance.new("Frame",ghostRow)
+gDot.Size=UDim2.fromOffset(8,8); gDot.Position=UDim2.new(0,12,0.5,-4)
+gDot.BackgroundColor3=Theme.Accent1; gDot.BorderSizePixel=0
+Instance.new("UICorner",gDot).CornerRadius=UDim.new(1,0)
+local gLbl=Instance.new("TextLabel",ghostRow)
+gLbl.Size=UDim2.new(1,-30,1,0); gLbl.Position=UDim2.new(0,28,0,0)
+gLbl.BackgroundTransparency=1; gLbl.Text="Ghost: server pos unhittable"
+gLbl.Font=Enum.Font.Gotham; gLbl.TextSize=12
+gLbl.TextColor3=Theme.TextSecondary; gLbl.TextXAlignment=Enum.TextXAlignment.Left
+
+-- Kill Anims toggle row — RY_HUB toggle style
+local animRow=makeRow(36,3)
+local animLbl=Instance.new("TextLabel",animRow)
+animLbl.Size=UDim2.new(1,-70,1,0); animLbl.Position=UDim2.new(0,12,0,0)
+animLbl.BackgroundTransparency=1; animLbl.Text="Kill Animations"
+animLbl.Font=Enum.Font.GothamBold; animLbl.TextSize=13
+animLbl.TextColor3=Theme.TextPrimary; animLbl.TextXAlignment=Enum.TextXAlignment.Left
+
+local togBg=Instance.new("TextButton",animRow)
+togBg.Size=UDim2.fromOffset(44,24); togBg.Position=UDim2.new(1,-54,0.5,-12)
+togBg.BackgroundColor3=Theme.SurfaceHighlight; togBg.BorderSizePixel=0; togBg.Text=""
+togBg.AutoButtonColor=false
+Instance.new("UICorner",togBg).CornerRadius=UDim.new(1,0)
+local togKnob=Instance.new("Frame",togBg)
+togKnob.Size=UDim2.fromOffset(18,18); togKnob.Position=UDim2.new(0,3,0.5,-9)
+togKnob.BackgroundColor3=Theme.TextSecondary; togKnob.BorderSizePixel=0
+Instance.new("UICorner",togKnob).CornerRadius=UDim.new(1,0)
+
+local function setAnimToggle(on)
+    Config.AnimsDisabled=on
+    TweenService:Create(togBg,TweenInfo.new(0.15),{
+        BackgroundColor3=on and Theme.Accent1 or Theme.SurfaceHighlight
+    }):Play()
+    TweenService:Create(togKnob,TweenInfo.new(0.15),{
+        Position=on and UDim2.new(1,-21,0.5,-9) or UDim2.new(0,3,0.5,-9),
+        BackgroundColor3=on and Color3.new(1,1,1) or Theme.TextSecondary,
+    }):Play()
+    if on then disableAnimations() else enableAnimations() end
+    saveSettings()
+end
+setAnimToggle(Config.AnimsDisabled)
+togBg.MouseButton1Click:Connect(function() setAnimToggle(not Config.AnimsDisabled) end)
+
+-- Discord row
+local discRow=makeRow(24,4)
+local discLbl=Instance.new("TextLabel",discRow)
+discLbl.Size=UDim2.new(1,0,1,0); discLbl.BackgroundTransparency=1
+discLbl.Text="discord.gg/9F5GdEWT"
+discLbl.Font=Enum.Font.GothamBold; discLbl.TextSize=11
+discLbl.TextColor3=Theme.Accent1; discLbl.TextXAlignment=Enum.TextXAlignment.Center
+
+-- Top indicator label (stays after GUI closed)
+local indSg=Instance.new("ScreenGui",CoreGui)
+indSg.Name="KryoDesyncInd"; indSg.ResetOnSpawn=false; indSg.DisplayOrder=998; indSg.IgnoreGuiInset=true
+local indLbl=Instance.new("TextLabel",indSg)
+indLbl.AnchorPoint=Vector2.new(0.5,0); indLbl.Position=UDim2.new(0.5,0,0,6)
+indLbl.Size=UDim2.new(0,260,0,22); indLbl.BackgroundColor3=Color3.new(0,0,0)
+indLbl.BackgroundTransparency=0.4; indLbl.BorderSizePixel=0
+indLbl.Text="kryo x kryz desync  •  discord.gg/9F5GdEWT"
+indLbl.Font=Enum.Font.GothamBlack; indLbl.TextSize=12
+indLbl.TextColor3=Color3.new(1,1,1)
+indLbl.TextStrokeColor3=Color3.new(0,0,0); indLbl.TextStrokeTransparency=0
+indLbl.TextXAlignment=Enum.TextXAlignment.Center; indLbl.Visible=false
+Instance.new("UICorner",indLbl).CornerRadius=UDim.new(0,6)
+local indStroke=Instance.new("UIStroke",indLbl)
+indStroke.Color=Theme.Accent1; indStroke.Thickness=1.2; indStroke.Transparency=0.3
+
+-- ── Heartbeat ─────────────────────────────────────────────────────────────────
+track(RunService.Heartbeat:Connect(function()
+    local c=lp.Character; local h=c and c:FindFirstChild("HumanoidRootPart")
+    if not State.desync_active and h then
+        State.desync_active=true; State.frozenPos=h.Position
+        State.distanceCounter=0; State.lastSyncTime=tick(); State.lastPulse=tick()
+    end
+    if State.desync_active and h then
+        local d=(h.Position-State.frozenPos).Magnitude
+        local t=tick()-State.lastSyncTime
+        if d>=(State.distanceCounter+Config.SyncInterval) or t>=Config.TimeInterval then
+            forceSync(); State.frozenPos=h.Position; State.distanceCounter=0; State.lastSyncTime=tick()
+        end
+    end
+    if State.desync_active then ghostify() end
+    if Config.AnimsDisabled then
+        local hum=c and c:FindFirstChildOfClass("Humanoid")
+        local anim=hum and hum:FindFirstChildOfClass("Animator")
+        if anim then for _,t in pairs(anim:GetPlayingAnimationTracks()) do pcall(function() t:Stop(0) end) end end
+    end
+    -- Update status
+    local on=State.desync_active
+    statusLbl.Text=on and "DESYNC: ON  |  Ghost active" or "DESYNC: OFF"
+    statusLbl.TextColor3=on and Theme.Accent1 or Theme.TextSecondary
+    statusDot.BackgroundColor3=on and Theme.Success or Theme.Error
+    indLbl.Visible=on
+    -- pulse indicator border
+    if on then
+        local p=(math.sin(tick()*3)+1)/2
+        indStroke.Color=Color3.fromHSV(0.5+p*0.08,1,1)
+    end
+end))
+
+-- ── Cleanup ───────────────────────────────────────────────────────────────────
+_G.KryoCleanup=function()
+    for _,c in pairs(Connections) do pcall(function() c:Disconnect() end) end
+    Connections={}
+    pcall(function() raknet.remove_send_hook(desync_send) end)
+    for _,n in ipairs({"KryoXKryzDesync","KryoDesyncInd"}) do
+        local g=CoreGui:FindFirstChild(n); if g then g:Destroy() end
+    end
+    _G.KryoCleanup=nil
+end
+
+print("[kryo x kryz desync] loaded — discord.gg/9F5GdEWT")
+
+]]
+    pcall(writefile, "autoexec/kryo_x_kryz_desync.lua", _src)
+    print("[kryo x kryz desync] Saved to autoexec/kryo_x_kryz_desync.lua")
+end
+
+-- ── Startup wait ──────────────────────────────────────────────────────────────
+task.wait(2)
+
+-- kryo x kryz desync — GUI matches RY_HUB style
+-- discord.gg/9F5GdEWT
+
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local TweenService     = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local HttpService      = game:GetService("HttpService")
+local CoreGui          = game:GetService("CoreGui")
+local lp               = Players.LocalPlayer
+
+if _G.KryoCleanup then pcall(_G.KryoCleanup) end
+task.wait(0.1)
+
+-- ── RY HUB matching theme ─────────────────────────────────────────────────────
+local Theme = {
+    Background       = Color3.fromRGB(15, 15, 20),
+    Surface          = Color3.fromRGB(22, 22, 30),
+    SurfaceHighlight = Color3.fromRGB(35, 35, 45),
+    Accent1          = Color3.fromRGB(0, 225, 255),
+    Accent2          = Color3.fromRGB(180, 0, 255),
+    TextPrimary      = Color3.fromRGB(240, 240, 240),
+    TextSecondary    = Color3.fromRGB(140, 140, 150),
+    Success          = Color3.fromRGB(30, 150, 90),
+    Error            = Color3.fromRGB(255, 60, 80),
+}
+
+-- ── Config / State ────────────────────────────────────────────────────────────
+local Config = {
+    SyncInterval  = 20,
+    TimeInterval  = 3,
+    AnimsDisabled = false,
+    SavedPos      = nil,
+}
+
+local State = {
+    desync_active   = false,
+    frozenPos       = Vector3.new(0,0,0),
+    distanceCounter = 0,
+    lastSyncTime    = 0,
+    lastPulse       = 0,
+}
+
+local Connections = {}
+local function track(c) Connections[#Connections+1] = c; return c end
+
+-- ── Settings save ─────────────────────────────────────────────────────────────
+local SAVE_FILE = "kryo_x_kryz_config.json"
+pcall(function()
+    local d = HttpService:JSONDecode(readfile(SAVE_FILE))
+    if type(d) == "table" then
+        Config.AnimsDisabled = d.AnimsDisabled == true
+        if d.SavedPos then
+            Config.SavedPos = UDim2.new(d.SavedPos.xs, d.SavedPos.xo, d.SavedPos.ys, d.SavedPos.yo)
+        end
     end
 end)
 
--- INITIALIZE
-updateStatus(DESYNC_ENABLED)
-marker.Parent = workspace
-screenGui.Parent = player:WaitForChild("PlayerGui")
+local mainFrame -- forward decl for saveSettings
+local function saveSettings()
+    pcall(function()
+        local p = mainFrame and mainFrame.Position
+        writefile(SAVE_FILE, HttpService:JSONEncode({
+            AnimsDisabled = Config.AnimsDisabled,
+            SavedPos = p and {xs=p.X.Scale,xo=p.X.Offset,ys=p.Y.Scale,yo=p.Y.Offset} or nil,
+        }))
+    end)
+end
 
-print("[DESYNC + MOBILE UI] Loaded — Marker at workspace.DesyncMarker | Touch buttons to control (no keybinds)")
+-- ── Core desync helpers ───────────────────────────────────────────────────────
+local function forceSync()
+    local c = lp.Character; local h = c and c:FindFirstChild("HumanoidRootPart"); if not h then return end
+    local rj = h:FindFirstChild("RootJoint"); if rj then rj:SetAttribute("Sync", tick()) end
+    pcall(function() h.CFrame = h.CFrame * CFrame.new(0,0,0) end)
+end
+
+local function ghostify()
+    local c = lp.Character; if not c then return end
+    for _, p in ipairs(c:GetChildren()) do
+        if p:IsA("BasePart") then p.CanQuery = false; p.CanTouch = false end
+    end
+end
+
+local function disableAnimations()
+    local c = lp.Character; if not c then return end
+    local a = c:FindFirstChild("Animate"); if a then a.Disabled = true end
+    local hum = c:FindFirstChildOfClass("Humanoid")
+    if hum then
+        local anim = hum:FindFirstChildOfClass("Animator")
+        if anim then
+            for _, t in pairs(anim:GetPlayingAnimationTracks()) do pcall(function() t:Stop(0) end) end
+            anim:Destroy(); Instance.new("Animator").Parent = hum
+        end
+    end
+end
+
+local function enableAnimations()
+    local c = lp.Character; if not c then return end
+    local a = c:FindFirstChild("Animate"); if a then a.Disabled = false end
+end
+
+-- ── raknet hook ───────────────────────────────────────────────────────────────
+local function desync_send(packet)
+    if not State.desync_active then return end
+    if packet.PacketId ~= 0x1B then return end
+    if tick() - State.lastPulse > 5 then State.lastPulse = tick(); return end
+    local b = packet.AsBuffer
+    if b and buffer.len(b) >= 13 then
+        buffer.writeu32(b,1,0xFFFFFFFF); buffer.writeu32(b,5,0xFFFFFFFF); buffer.writeu32(b,9,0xFFFFFFFF)
+        packet:SetData(b)
+    end
+end
+pcall(function() raknet.add_send_hook(desync_send) end)
+
+local function startDesync()
+    local h = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart"); if not h then return end
+    State.desync_active=true; State.frozenPos=h.Position
+    State.distanceCounter=0; State.lastSyncTime=tick(); State.lastPulse=tick()
+    if Config.AnimsDisabled then disableAnimations() end
+end
+
+track(lp.CharacterAdded:Connect(function()
+    State.desync_active = false; task.wait(0.5); startDesync()
+end))
+if lp.Character then task.spawn(function() task.wait(0.3); startDesync() end) end
+
+-- ── GUI — matching RY_HUB exactly ────────────────────────────────────────────
+local old = CoreGui:FindFirstChild("KryoXKryzDesync"); if old then old:Destroy() end
+local sg = Instance.new("ScreenGui")
+sg.Name="KryoXKryzDesync"; sg.ResetOnSpawn=false; sg.DisplayOrder=999
+sg.ZIndexBehavior=Enum.ZIndexBehavior.Sibling; sg.Parent=CoreGui
+
+-- Main frame — same dark background as RY_HUB panels
+mainFrame = Instance.new("Frame", sg)
+mainFrame.Name = "MainWindow"
+mainFrame.Size = UDim2.new(0, 300, 0, 210)
+mainFrame.Position = Config.SavedPos or UDim2.new(0.5, -150, 0.1, 0)
+mainFrame.BackgroundColor3 = Theme.Background
+mainFrame.BackgroundTransparency = 0.05
+mainFrame.BorderSizePixel = 0
+mainFrame.ClipsDescendants = true
+Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 12)
+local mStroke = Instance.new("UIStroke", mainFrame)
+mStroke.Thickness=1.5; mStroke.Color=Theme.Accent2; mStroke.Transparency=0.35
+
+-- Header bar — same style as RY_HUB title bars
+local header = Instance.new("Frame", mainFrame)
+header.Name="Header"; header.Size=UDim2.new(1,0,0,42)
+header.BackgroundColor3=Theme.Surface; header.BackgroundTransparency=0; header.BorderSizePixel=0
+Instance.new("UICorner", header).CornerRadius=UDim.new(0,12)
+-- square bottom corners on header
+local hFix=Instance.new("Frame",header); hFix.Size=UDim2.new(1,0,0,12)
+hFix.Position=UDim2.new(0,0,1,-12); hFix.BackgroundColor3=Theme.Surface; hFix.BorderSizePixel=0
+
+-- Accent gradient bar under header (matches RY_HUB notification bar style)
+local accentBar = Instance.new("Frame", mainFrame)
+accentBar.Size=UDim2.new(1,0,0,2); accentBar.Position=UDim2.new(0,0,0,42)
+accentBar.BackgroundColor3=Theme.Accent1; accentBar.BorderSizePixel=0
+local accentGrad=Instance.new("UIGradient",accentBar)
+accentGrad.Color=ColorSequence.new{
+    ColorSequenceKeypoint.new(0,Theme.Accent2),
+    ColorSequenceKeypoint.new(1,Theme.Accent1),
+}; accentGrad.Rotation=0
+
+-- Title dot + label
+local titleDot=Instance.new("Frame",header)
+titleDot.Size=UDim2.fromOffset(8,8); titleDot.Position=UDim2.new(0,12,0.5,-4)
+titleDot.BackgroundColor3=Theme.Accent1; titleDot.BorderSizePixel=0
+Instance.new("UICorner",titleDot).CornerRadius=UDim.new(1,0)
+
+local titleLbl=Instance.new("TextLabel",header)
+titleLbl.Size=UDim2.new(1,-80,1,0); titleLbl.Position=UDim2.new(0,26,0,0)
+titleLbl.BackgroundTransparency=1; titleLbl.Text="kryo x kryz desync"
+titleLbl.Font=Enum.Font.GothamBlack; titleLbl.TextSize=13
+titleLbl.TextColor3=Theme.TextPrimary; titleLbl.TextXAlignment=Enum.TextXAlignment.Left
+
+-- Close button — same style as RY_HUB
+local closeBtn=Instance.new("TextButton",header)
+closeBtn.Size=UDim2.fromOffset(22,22); closeBtn.Position=UDim2.new(1,-30,0.5,-11)
+closeBtn.BackgroundColor3=Theme.SurfaceHighlight; closeBtn.Text="✕"
+closeBtn.Font=Enum.Font.GothamBold; closeBtn.TextSize=11
+closeBtn.TextColor3=Theme.TextSecondary; closeBtn.AutoButtonColor=false
+Instance.new("UICorner",closeBtn).CornerRadius=UDim.new(1,0)
+closeBtn.MouseEnter:Connect(function() closeBtn.BackgroundColor3=Theme.Error; closeBtn.TextColor3=Color3.new(1,1,1) end)
+closeBtn.MouseLeave:Connect(function() closeBtn.BackgroundColor3=Theme.SurfaceHighlight; closeBtn.TextColor3=Theme.TextSecondary end)
+closeBtn.MouseButton1Click:Connect(function() sg.Enabled=false end)
+
+-- Drag
+local _drag,_dm,_ds=false,nil,nil
+header.InputBegan:Connect(function(i)
+    if i.UserInputType==Enum.UserInputType.MouseButton1 then
+        _drag=true; _dm=i.Position; _ds=mainFrame.Position
+    end
+end)
+track(UserInputService.InputChanged:Connect(function(i)
+    if _drag and i.UserInputType==Enum.UserInputType.MouseMovement then
+        local d=i.Position-_dm
+        mainFrame.Position=UDim2.new(_ds.X.Scale,_ds.X.Offset+d.X,_ds.Y.Scale,_ds.Y.Offset+d.Y)
+    end
+end))
+track(UserInputService.InputEnded:Connect(function(i)
+    if i.UserInputType==Enum.UserInputType.MouseButton1 and _drag then _drag=false; saveSettings() end
+end))
+
+-- Content area
+local content=Instance.new("Frame",mainFrame)
+content.Size=UDim2.new(1,-20,1,-58); content.Position=UDim2.new(0,10,0,50)
+content.BackgroundTransparency=1; content.BorderSizePixel=0
+local cLayout=Instance.new("UIListLayout",content)
+cLayout.Padding=UDim.new(0,6); cLayout.SortOrder=Enum.SortOrder.LayoutOrder
+
+-- Helper: RY_HUB style row
+local function makeRow(h, order)
+    local r=Instance.new("Frame",content)
+    r.Size=UDim2.new(1,0,0,h); r.BackgroundColor3=Theme.Surface
+    r.BackgroundTransparency=0; r.BorderSizePixel=0; r.LayoutOrder=order
+    Instance.new("UICorner",r).CornerRadius=UDim.new(0,8)
+    local rs=Instance.new("UIStroke",r); rs.Color=Theme.SurfaceHighlight; rs.Thickness=1; rs.Transparency=0.5
+    return r
+end
+
+-- Status row
+local statusRow=makeRow(36,1)
+local statusDot=Instance.new("Frame",statusRow)
+statusDot.Size=UDim2.fromOffset(8,8); statusDot.Position=UDim2.new(0,12,0.5,-4)
+statusDot.BackgroundColor3=Theme.Error; statusDot.BorderSizePixel=0
+Instance.new("UICorner",statusDot).CornerRadius=UDim.new(1,0)
+local statusLbl=Instance.new("TextLabel",statusRow)
+statusLbl.Size=UDim2.new(1,-30,1,0); statusLbl.Position=UDim2.new(0,28,0,0)
+statusLbl.BackgroundTransparency=1; statusLbl.Text="DESYNC: OFF"
+statusLbl.Font=Enum.Font.GothamBold; statusLbl.TextSize=13
+statusLbl.TextColor3=Theme.TextSecondary; statusLbl.TextXAlignment=Enum.TextXAlignment.Left
+
+-- Ghost row
+local ghostRow=makeRow(30,2)
+local gDot=Instance.new("Frame",ghostRow)
+gDot.Size=UDim2.fromOffset(8,8); gDot.Position=UDim2.new(0,12,0.5,-4)
+gDot.BackgroundColor3=Theme.Accent1; gDot.BorderSizePixel=0
+Instance.new("UICorner",gDot).CornerRadius=UDim.new(1,0)
+local gLbl=Instance.new("TextLabel",ghostRow)
+gLbl.Size=UDim2.new(1,-30,1,0); gLbl.Position=UDim2.new(0,28,0,0)
+gLbl.BackgroundTransparency=1; gLbl.Text="Ghost: server pos unhittable"
+gLbl.Font=Enum.Font.Gotham; gLbl.TextSize=12
+gLbl.TextColor3=Theme.TextSecondary; gLbl.TextXAlignment=Enum.TextXAlignment.Left
+
+-- Kill Anims toggle row — RY_HUB toggle style
+local animRow=makeRow(36,3)
+local animLbl=Instance.new("TextLabel",animRow)
+animLbl.Size=UDim2.new(1,-70,1,0); animLbl.Position=UDim2.new(0,12,0,0)
+animLbl.BackgroundTransparency=1; animLbl.Text="Kill Animations"
+animLbl.Font=Enum.Font.GothamBold; animLbl.TextSize=13
+animLbl.TextColor3=Theme.TextPrimary; animLbl.TextXAlignment=Enum.TextXAlignment.Left
+
+local togBg=Instance.new("TextButton",animRow)
+togBg.Size=UDim2.fromOffset(44,24); togBg.Position=UDim2.new(1,-54,0.5,-12)
+togBg.BackgroundColor3=Theme.SurfaceHighlight; togBg.BorderSizePixel=0; togBg.Text=""
+togBg.AutoButtonColor=false
+Instance.new("UICorner",togBg).CornerRadius=UDim.new(1,0)
+local togKnob=Instance.new("Frame",togBg)
+togKnob.Size=UDim2.fromOffset(18,18); togKnob.Position=UDim2.new(0,3,0.5,-9)
+togKnob.BackgroundColor3=Theme.TextSecondary; togKnob.BorderSizePixel=0
+Instance.new("UICorner",togKnob).CornerRadius=UDim.new(1,0)
+
+local function setAnimToggle(on)
+    Config.AnimsDisabled=on
+    TweenService:Create(togBg,TweenInfo.new(0.15),{
+        BackgroundColor3=on and Theme.Accent1 or Theme.SurfaceHighlight
+    }):Play()
+    TweenService:Create(togKnob,TweenInfo.new(0.15),{
+        Position=on and UDim2.new(1,-21,0.5,-9) or UDim2.new(0,3,0.5,-9),
+        BackgroundColor3=on and Color3.new(1,1,1) or Theme.TextSecondary,
+    }):Play()
+    if on then disableAnimations() else enableAnimations() end
+    saveSettings()
+end
+setAnimToggle(Config.AnimsDisabled)
+togBg.MouseButton1Click:Connect(function() setAnimToggle(not Config.AnimsDisabled) end)
+
+-- Discord row
+local discRow=makeRow(24,4)
+local discLbl=Instance.new("TextLabel",discRow)
+discLbl.Size=UDim2.new(1,0,1,0); discLbl.BackgroundTransparency=1
+discLbl.Text="discord.gg/9F5GdEWT"
+discLbl.Font=Enum.Font.GothamBold; discLbl.TextSize=11
+discLbl.TextColor3=Theme.Accent1; discLbl.TextXAlignment=Enum.TextXAlignment.Center
+
+-- Top indicator label (stays after GUI closed)
+local indSg=Instance.new("ScreenGui",CoreGui)
+indSg.Name="KryoDesyncInd"; indSg.ResetOnSpawn=false; indSg.DisplayOrder=998; indSg.IgnoreGuiInset=true
+local indLbl=Instance.new("TextLabel",indSg)
+indLbl.AnchorPoint=Vector2.new(0.5,0); indLbl.Position=UDim2.new(0.5,0,0,6)
+indLbl.Size=UDim2.new(0,260,0,22); indLbl.BackgroundColor3=Color3.new(0,0,0)
+indLbl.BackgroundTransparency=0.4; indLbl.BorderSizePixel=0
+indLbl.Text="kryo x kryz desync  •  discord.gg/9F5GdEWT"
+indLbl.Font=Enum.Font.GothamBlack; indLbl.TextSize=12
+indLbl.TextColor3=Color3.new(1,1,1)
+indLbl.TextStrokeColor3=Color3.new(0,0,0); indLbl.TextStrokeTransparency=0
+indLbl.TextXAlignment=Enum.TextXAlignment.Center; indLbl.Visible=false
+Instance.new("UICorner",indLbl).CornerRadius=UDim.new(0,6)
+local indStroke=Instance.new("UIStroke",indLbl)
+indStroke.Color=Theme.Accent1; indStroke.Thickness=1.2; indStroke.Transparency=0.3
+
+-- ── Heartbeat ─────────────────────────────────────────────────────────────────
+track(RunService.Heartbeat:Connect(function()
+    local c=lp.Character; local h=c and c:FindFirstChild("HumanoidRootPart")
+    if not State.desync_active and h then
+        State.desync_active=true; State.frozenPos=h.Position
+        State.distanceCounter=0; State.lastSyncTime=tick(); State.lastPulse=tick()
+    end
+    if State.desync_active and h then
+        local d=(h.Position-State.frozenPos).Magnitude
+        local t=tick()-State.lastSyncTime
+        if d>=(State.distanceCounter+Config.SyncInterval) or t>=Config.TimeInterval then
+            forceSync(); State.frozenPos=h.Position; State.distanceCounter=0; State.lastSyncTime=tick()
+        end
+    end
+    if State.desync_active then ghostify() end
+    if Config.AnimsDisabled then
+        local hum=c and c:FindFirstChildOfClass("Humanoid")
+        local anim=hum and hum:FindFirstChildOfClass("Animator")
+        if anim then for _,t in pairs(anim:GetPlayingAnimationTracks()) do pcall(function() t:Stop(0) end) end end
+    end
+    -- Update status
+    local on=State.desync_active
+    statusLbl.Text=on and "DESYNC: ON  |  Ghost active" or "DESYNC: OFF"
+    statusLbl.TextColor3=on and Theme.Accent1 or Theme.TextSecondary
+    statusDot.BackgroundColor3=on and Theme.Success or Theme.Error
+    indLbl.Visible=on
+    -- pulse indicator border
+    if on then
+        local p=(math.sin(tick()*3)+1)/2
+        indStroke.Color=Color3.fromHSV(0.5+p*0.08,1,1)
+    end
+end))
+
+-- ── Cleanup ───────────────────────────────────────────────────────────────────
+_G.KryoCleanup=function()
+    for _,c in pairs(Connections) do pcall(function() c:Disconnect() end) end
+    Connections={}
+    pcall(function() raknet.remove_send_hook(desync_send) end)
+    for _,n in ipairs({"KryoXKryzDesync","KryoDesyncInd"}) do
+        local g=CoreGui:FindFirstChild(n); if g then g:Destroy() end
+    end
+    _G.KryoCleanup=nil
+end
+
+print("[kryo x kryz desync] loaded — discord.gg/9F5GdEWT")
