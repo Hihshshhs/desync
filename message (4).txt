@@ -1,7 +1,7 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 local character = player.Character or player.CharacterAdded:Wait()
@@ -9,480 +9,168 @@ local hrp = character:WaitForChild("HumanoidRootPart")
 
 -- CONFIG
 local DESYNC_ENABLED = false
-local MARKER_ENABLED = true
 local UPDATE_DISTANCE = 50
 local FREEZE_AT_HALFWAY = true
 
--- STATE
+-- VARIABLES
 local realPosition = hrp.Position
-local serverPosition = hrp.Position
+local fakePosition = hrp.Position
 local destination = nil
-local uiMinimized = false
+local isMoving = false
 
--- ========================
--- 3D MARKER
--- ========================
+-- MARKER (server‑visible)
 local marker = Instance.new("Part")
-marker.Name = "ServerPosMarker"
-marker.Size = Vector3.new(1, 5, 1)
+marker.Name = "DesyncMarker"
+marker.Shape = Enum.PartShape.Ball
+marker.Size = Vector3.new(4, 4, 4)
+marker.BrickColor = BrickColor.new("Bright red")
+marker.Material = Enum.Material.Neon
 marker.Anchored = true
 marker.CanCollide = false
-marker.Transparency = 0.5
-marker.Material = Enum.Material.Neon
-marker.Color = Color3.fromRGB(255, 50, 50)
+marker.Transparency = 0.4
 marker.Parent = workspace
 
-local billboard = Instance.new("BillboardGui")
-billboard.Name = "MarkerLabel"
-billboard.Size = UDim2.new(0, 120, 0, 30)
-billboard.StudsOffset = Vector3.new(0, 4, 0)
-billboard.AlwaysOnTop = true
-billboard.Parent = marker
-
-local markerText = Instance.new("TextLabel")
-markerText.Size = UDim2.new(1, 0, 1, 0)
-markerText.BackgroundTransparency = 0.5
-markerText.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-markerText.TextColor3 = Color3.fromRGB(255, 50, 50)
-markerText.Text = "SERVER POS"
-markerText.Font = Enum.Font.GothamBold
-markerText.TextScaled = true
-markerText.Parent = billboard
-
--- Beam
-local beamAttachment1 = Instance.new("Attachment")
-beamAttachment1.Parent = hrp
-
-local beamAttachment2 = Instance.new("Attachment")
-beamAttachment2.Parent = marker
-
-local beam = Instance.new("Beam")
-beam.Name = "DesyncBeam"
-beam.Color = ColorSequence.new(Color3.fromRGB(255, 50, 50), Color3.fromRGB(255, 150, 50))
-beam.Transparency = NumberSequence.new(0.3)
-beam.Width0 = 0.15
-beam.Width1 = 0.15
-beam.FaceCamera = true
-beam.Attachment0 = beamAttachment1
-beam.Attachment1 = beamAttachment2
-beam.Parent = hrp
-
--- ========================
--- UI CREATION (MOBILE OPTIMIZED)
--- ========================
+-- UI (Mobile‑first ScreenGui)
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "DesyncUI"
+screenGui.Name = "DesyncMobileUI"
 screenGui.ResetOnSpawn = false
-screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
--- Main Frame
-local mainFrame = Instance.new("Frame")
-mainFrame.Name = "MainFrame"
-mainFrame.Size = UDim2.new(0, 200, 0, 280)
-mainFrame.Position = UDim2.new(0, 10, 0.5, -140)
-mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
-mainFrame.BorderSizePixel = 0
-mainFrame.Active = true
-mainFrame.Draggable = true
-mainFrame.Parent = screenGui
-
-local mainCorner = Instance.new("UICorner")
-mainCorner.CornerRadius = UDim.new(0, 10)
-mainCorner.Parent = mainFrame
-
-local mainStroke = Instance.new("UIStroke")
-mainStroke.Color = Color3.fromRGB(80, 80, 120)
-mainStroke.Thickness = 2
-mainStroke.Parent = mainFrame
-
--- Gradient header
-local headerFrame = Instance.new("Frame")
-headerFrame.Size = UDim2.new(1, 0, 0, 40)
-headerFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 50)
-headerFrame.BorderSizePixel = 0
-headerFrame.Parent = mainFrame
-
-local headerCorner = Instance.new("UICorner")
-headerCorner.CornerRadius = UDim.new(0, 10)
-headerCorner.Parent = headerFrame
-
--- Fix bottom corners of header
-local headerFix = Instance.new("Frame")
-headerFix.Size = UDim2.new(1, 0, 0, 10)
-headerFix.Position = UDim2.new(0, 0, 1, -10)
-headerFix.BackgroundColor3 = Color3.fromRGB(35, 35, 50)
-headerFix.BorderSizePixel = 0
-headerFix.Parent = headerFrame
+-- Main frame (mobile sized)
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, 240, 0, 160)
+frame.Position = UDim2.new(0.5, -120, 0.85, 0) -- bottom‑center on mobile
+frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+frame.BorderSizePixel = 0
+frame.Parent = screenGui
 
 -- Title
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -40, 1, 0)
-title.Position = UDim2.new(0, 12, 0, 0)
+title.Size = UDim2.new(1, 0, 0, 28)
 title.BackgroundTransparency = 1
-title.Text = "⚡ DESYNC CTRL"
+title.Text = "DESYNC CONTROLS"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.Font = Enum.Font.GothamBold
 title.TextSize = 16
-title.TextXAlignment = Enum.TextXAlignment.Left
-title.Parent = headerFrame
+title.Parent = frame
 
--- Minimize Button
-local minimizeBtn = Instance.new("TextButton")
-minimizeBtn.Name = "MinimizeBtn"
-minimizeBtn.Size = UDim2.new(0, 30, 0, 30)
-minimizeBtn.Position = UDim2.new(1, -35, 0, 5)
-minimizeBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
-minimizeBtn.BorderSizePixel = 0
-minimizeBtn.Text = "—"
-minimizeBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
-minimizeBtn.Font = Enum.Font.GothamBold
-minimizeBtn.TextSize = 18
-minimizeBtn.Parent = headerFrame
-
-local minCorner = Instance.new("UICorner")
-minCorner.CornerRadius = UDim.new(0, 6)
-minCorner.Parent = minimizeBtn
-
--- Content Frame
-local contentFrame = Instance.new("Frame")
-contentFrame.Name = "Content"
-contentFrame.Size = UDim2.new(1, -16, 1, -50)
-contentFrame.Position = UDim2.new(0, 8, 0, 45)
-contentFrame.BackgroundTransparency = 1
-contentFrame.Parent = mainFrame
-
--- Status Indicator
-local statusFrame = Instance.new("Frame")
-statusFrame.Size = UDim2.new(1, 0, 0, 36)
-statusFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
-statusFrame.BorderSizePixel = 0
-statusFrame.Parent = contentFrame
-
-local statusCorner = Instance.new("UICorner")
-statusCorner.CornerRadius = UDim.new(0, 8)
-statusCorner.Parent = statusFrame
-
-local statusDot = Instance.new("Frame")
-statusDot.Name = "Dot"
-statusDot.Size = UDim2.new(0, 10, 0, 10)
-statusDot.Position = UDim2.new(0, 10, 0.5, -5)
-statusDot.BackgroundColor3 = Color3.fromRGB(255, 60, 60)
-statusDot.BorderSizePixel = 0
-statusDot.Parent = statusFrame
-
-local dotCorner = Instance.new("UICorner")
-dotCorner.CornerRadius = UDim.new(1, 0)
-dotCorner.Parent = statusDot
-
+-- Status label
 local statusLabel = Instance.new("TextLabel")
-statusLabel.Name = "StatusLabel"
-statusLabel.Size = UDim2.new(1, -30, 1, 0)
-statusLabel.Position = UDim2.new(0, 26, 0, 0)
+statusLabel.Size = UDim2.new(1, 0, 0, 28)
+statusLabel.Position = UDim2.new(0, 0, 0, 35)
 statusLabel.BackgroundTransparency = 1
-statusLabel.Text = "DISABLED"
-statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
-statusLabel.Font = Enum.Font.GothamBold
+statusLabel.Text = "Status: DISABLED"
+statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+statusLabel.Font = Enum.Font.Gotham
 statusLabel.TextSize = 14
 statusLabel.TextXAlignment = Enum.TextXAlignment.Left
-statusLabel.Parent = statusFrame
+statusLabel.Parent = frame
 
--- Distance
-local distLabel = Instance.new("TextLabel")
-distLabel.Name = "DistLabel"
-distLabel.Size = UDim2.new(1, 0, 0, 20)
-distLabel.Position = UDim2.new(0, 0, 0, 40)
-distLabel.BackgroundTransparency = 1
-distLabel.Text = "📍 Distance: 0 studs"
-distLabel.TextColor3 = Color3.fromRGB(160, 160, 190)
-distLabel.Font = Enum.Font.Gotham
-distLabel.TextSize = 12
-distLabel.TextXAlignment = Enum.TextXAlignment.Left
-distLabel.Parent = contentFrame
+-- Toggle button (touch area)
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Size = UDim2.new(1, 0, 0, 36)
+toggleBtn.Position = UDim2.new(0, 0, 0, 70)
+toggleBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+toggleBtn.Text = "TOGGLE DESYNC"
+toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+toggleBtn.Font = Enum.Font.GothamBold
+toggleBtn.TextSize = 15
+toggleBtn.Parent = frame
 
--- Server Pos Label
-local serverLabel = Instance.new("TextLabel")
-serverLabel.Name = "ServerLabel"
-serverLabel.Size = UDim2.new(1, 0, 0, 20)
-serverLabel.Position = UDim2.new(0, 0, 0, 60)
-serverLabel.BackgroundTransparency = 1
-serverLabel.Text = "🎯 Server: 0, 0, 0"
-serverLabel.TextColor3 = Color3.fromRGB(160, 160, 190)
-serverLabel.Font = Enum.Font.Gotham
-serverLabel.TextSize = 12
-serverLabel.TextXAlignment = Enum.TextXAlignment.Left
-serverLabel.Parent = contentFrame
+-- Rollback button (touch area)
+local rollbackBtn = Instance.new("TextButton")
+rollbackBtn.Size = UDim2.new(1, 0, 0, 36)
+rollbackBtn.Position = UDim2.new(0, 0, 0, 112)
+rollbackBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
+rollbackBtn.Text = "ROLLBACK TO SERVER POS"
+rollbackBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+rollbackBtn.Font = Enum.Font.GothamBold
+rollbackBtn.TextSize = 14
+rollbackBtn.Parent = frame
 
--- ========================
--- BUTTON HELPER
--- ========================
-local function createButton(name, text, color, pos, parent)
-    local btn = Instance.new("TextButton")
-    btn.Name = name
-    btn.Size = UDim2.new(1, 0, 0, 40)
-    btn.Position = pos
-    btn.BackgroundColor3 = color
-    btn.BorderSizePixel = 0
-    btn.Text = text
-    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    btn.Font = Enum.Font.GothamBold
-    btn.TextSize = 14
-    btn.AutoButtonColor = false
-    btn.Parent = parent
-    
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 8)
-    corner.Parent = btn
-    
-    -- Touch feedback
-    btn.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
-            TweenService:Create(btn, TweenInfo.new(0.1), {
-                Size = UDim2.new(1, -4, 0, 38),
-                Position = UDim2.new(0, 2, pos.Y.Scale, pos.Y.Offset + 1)
-            }):Play()
-        end
-    end)
-    
-    btn.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
-            TweenService:Create(btn, TweenInfo.new(0.1), {
-                Size = UDim2.new(1, 0, 0, 40),
-                Position = pos
-            }):Play()
-        end
-    end)
-    
-    return btn
+-- Helper: update marker (always at fake pos)
+local function updateMarker()
+    marker.CFrame = CFrame.new(fakePosition)
 end
 
--- Buttons
-local toggleBtn = createButton("ToggleBtn", "▶ ENABLE DESYNC", Color3.fromRGB(220, 60, 60), UDim2.new(0, 0, 0, 88), contentFrame)
-local rollbackBtn = createButton("RollbackBtn", "🔄 ROLLBACK TO SERVER", Color3.fromRGB(50, 110, 240), UDim2.new(0, 0, 0, 134), contentFrame)
-local markerBtn = createButton("MarkerBtn", "👁 TOGGLE MARKER", Color3.fromRGB(80, 80, 110), UDim2.new(0, 0, 0, 180), contentFrame)
-local resetBtn = createButton("ResetBtn", "📍 SET SERVER = MY POS", Color3.fromRGB(120, 70, 180), UDim2.new(0, 0, 0, 226), contentFrame)
+-- Helper: set fake position
+local function setFakePosition(pos)
+    fakePosition = pos
+    hrp:SetNetworkOwner(nil)
+    hrp.CFrame = CFrame.new(fakePosition)
+    hrp:SetNetworkOwner(player)
+    updateMarker()
+end
 
--- ========================
--- MINIMIZE BUTTON (FLOATING)
--- ========================
-local floatBtn = Instance.new("TextButton")
-floatBtn.Name = "FloatBtn"
-floatBtn.Size = UDim2.new(0, 50, 0, 50)
-floatBtn.Position = UDim2.new(0, 10, 0.5, -25)
-floatBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 50)
-floatBtn.BorderSizePixel = 0
-floatBtn.Text = "⚡"
-floatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-floatBtn.Font = Enum.Font.GothamBold
-floatBtn.TextSize = 22
-floatBtn.Visible = false
-floatBtn.Active = true
-floatBtn.Draggable = true
-floatBtn.Parent = screenGui
+-- Helper: update status UI
+local function updateStatus(enabled)
+    DESYNC_ENABLED = enabled
+    statusLabel.Text = "Status: " .. (enabled and "ENABLED" or "DISABLED")
+    statusLabel.TextColor3 = enabled and Color3.fromRGB(100, 255, 100) or Color3.fromRGB(255, 100, 100)
+    toggleBtn.Text = enabled and "DISABLE DESYNC" or "ENABLE DESYNC"
+    toggleBtn.BackgroundColor3 = enabled and Color3.fromRGB(150, 50, 50) or Color3.fromRGB(100, 100, 100)
+end
 
-local floatCorner = Instance.new("UICorner")
-floatCorner.CornerRadius = UDim.new(1, 0)
-floatCorner.Parent = floatBtn
-
-local floatStroke = Instance.new("UIStroke")
-floatStroke.Color = Color3.fromRGB(100, 100, 150)
-floatStroke.Thickness = 2
-floatStroke.Parent = floatBtn
-
--- Pulse animation on float button
-spawn(function()
-    while true do
-        if floatBtn.Visible and DESYNC_ENABLED then
-            TweenService:Create(floatStroke, TweenInfo.new(0.5), {Color = Color3.fromRGB(80, 255, 80)}):Play()
-            wait(0.5)
-            TweenService:Create(floatStroke, TweenInfo.new(0.5), {Color = Color3.fromRGB(100, 100, 150)}):Play()
-            wait(0.5)
+-- Update desync loop
+local function updateDesync()
+    if not DESYNC_ENABLED then return end
+    
+    local currentPos = hrp.Position
+    local distance = (currentPos - realPosition).Magnitude
+    
+    if distance >= UPDATE_DISTANCE then
+        if FREEZE_AT_HALFWAY and destination then
+            local halfway = (realPosition + destination) / 2
+            setFakePosition(halfway)
         else
-            wait(0.3)
+            setFakePosition(currentPos)
         end
-    end
-end)
-
--- ========================
--- FUNCTIONS
--- ========================
-local function updateUI()
-    if DESYNC_ENABLED then
-        statusLabel.Text = "ENABLED"
-        statusLabel.TextColor3 = Color3.fromRGB(80, 255, 80)
-        statusDot.BackgroundColor3 = Color3.fromRGB(80, 255, 80)
-        toggleBtn.Text = "⏹ DISABLE DESYNC"
-        toggleBtn.BackgroundColor3 = Color3.fromRGB(60, 180, 60)
-    else
-        statusLabel.Text = "DISABLED"
-        statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
-        statusDot.BackgroundColor3 = Color3.fromRGB(255, 60, 60)
-        toggleBtn.Text = "▶ ENABLE DESYNC"
-        toggleBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
-    end
-    
-    if MARKER_ENABLED then
-        markerBtn.Text = "👁 MARKER: ON"
-        markerBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 110)
-    else
-        markerBtn.Text = "👁 MARKER: OFF"
-        markerBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 65)
-    end
-    
-    -- Animate status dot
-    TweenService:Create(statusDot, TweenInfo.new(0.2), {
-        BackgroundColor3 = DESYNC_ENABLED and Color3.fromRGB(80, 255, 80) or Color3.fromRGB(255, 60, 60)
-    }):Play()
-end
-
-local function toggleDesync()
-    DESYNC_ENABLED = not DESYNC_ENABLED
-    
-    if DESYNC_ENABLED then
-        serverPosition = hrp.Position
-        realPosition = hrp.Position
-    end
-    
-    updateUI()
-end
-
-local function rollbackToServerPos()
-    if character and hrp then
-        -- Flash effect
-        TweenService:Create(rollbackBtn, TweenInfo.new(0.1), {BackgroundColor3 = Color3.fromRGB(100, 180, 255)}):Play()
-        wait(0.1)
-        TweenService:Create(rollbackBtn, TweenInfo.new(0.1), {BackgroundColor3 = Color3.fromRGB(50, 110, 240)}):Play()
-        
-        hrp.CFrame = CFrame.new(serverPosition)
-        realPosition = serverPosition
-        print("[DESYNC] Rolled back to server position")
+        realPosition = currentPos
     end
 end
 
-local function toggleMarker()
-    MARKER_ENABLED = not MARKER_ENABLED
-    marker.Transparency = MARKER_ENABLED and 0.5 or 1
-    beam.Enabled = MARKER_ENABLED
-    billboard.Enabled = MARKER_ENABLED
-    updateUI()
-end
-
-local function resetServerPos()
-    if hrp then
-        serverPosition = hrp.Position
-        realPosition = hrp.Position
-        
-        -- Flash effect
-        TweenService:Create(resetBtn, TweenInfo.new(0.1), {BackgroundColor3 = Color3.fromRGB(180, 120, 240)}):Play()
-        wait(0.1)
-        TweenService:Create(resetBtn, TweenInfo.new(0.1), {BackgroundColor3 = Color3.fromRGB(120, 70, 180)}):Play()
-        
-        print("[DESYNC] Server position reset to current position")
-    end
-end
-
-local function minimizeUI()
-    uiMinimized = true
-    mainFrame.Visible = false
-    floatBtn.Visible = true
-end
-
-local function expandUI()
-    uiMinimized = false
-    mainFrame.Visible = true
-    floatBtn.Visible = false
-end
-
--- ========================
--- BUTTON CONNECTIONS
--- ========================
-toggleBtn.MouseButton1Click:Connect(toggleDesync)
-rollbackBtn.MouseButton1Click:Connect(rollbackToServerPos)
-markerBtn.MouseButton1Click:Connect(toggleMarker)
-resetBtn.MouseButton1Click:Connect(resetServerPos)
-minimizeBtn.MouseButton1Click:Connect(minimizeUI)
-floatBtn.MouseButton1Click:Connect(expandUI)
-
--- ========================
 -- MAIN LOOP
--- ========================
 RunService.Heartbeat:Connect(function()
     if not character or not hrp then return end
-    if not hrp:IsDescendantOf(workspace) then return end
     
     local humanoid = character:FindFirstChild("Humanoid")
-    
-    -- Always update marker visuals
-    marker.CFrame = CFrame.new(serverPosition)
-    
-    -- Update labels
-    local dist = (hrp.Position - serverPosition).Magnitude
-    distLabel.Text = string.format("📍 Distance: %.1f studs", dist)
-    serverLabel.Text = string.format("🎯 Server: %d, %d, %d", 
-        math.floor(serverPosition.X), 
-        math.floor(serverPosition.Y), 
-        math.floor(serverPosition.Z))
-    
-    if DESYNC_ENABLED then
-        realPosition = hrp.Position
-        local distance = (realPosition - serverPosition).Magnitude
-        
-        if distance >= UPDATE_DISTANCE then
-            if FREEZE_AT_HALFWAY and destination then
-                local halfway = (serverPosition + realPosition) / 2
-                serverPosition = halfway
-            else
-                serverPosition = realPosition
-            end
+    if humanoid and humanoid.MoveDirection.Magnitude > 0 then
+        isMoving = true
+        destination = hrp.Position + (humanoid.MoveDirection * 100)
+        updateDesync()
+    else
+        isMoving = false
+    end
+end)
+
+-- MOBILE TOUCH HANDLING (no keybinds)
+toggleBtn.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.Touch then
+        updateStatus(not DESYNC_ENABLED)
+    end
+end)
+
+rollbackBtn.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.Touch then
+        if not DESYNC_ENABLED then
+            statusLabel.Text = "Rollback: No desync active"
+            wait(2)
+            statusLabel.Text = "Status: DISABLED"
+            return
         end
         
-        -- Desync trick
-        spawn(function()
-            hrp:SetNetworkOwner(nil)
-            local frozenCFrame = hrp.CFrame
-            hrp.CFrame = CFrame.new(serverPosition)
-            wait(0.01)
-            hrp.CFrame = frozenCFrame
-            hrp:SetNetworkOwner(player)
-        end)
-    end
-    
-    if humanoid and humanoid.MoveDirection.Magnitude > 0 then
-        destination = hrp.Position + (humanoid.MoveDirection * 100)
+        -- Force fake position to match real position (server sees you)
+        setFakePosition(realPosition)
+        updateStatus(false)
+        statusLabel.Text = "Rollback: Position synced to server"
+        wait(2)
+        statusLabel.Text = "Status: DISABLED"
     end
 end)
 
--- ========================
--- RESPAWN HANDLER
--- ========================
-player.CharacterAdded:Connect(function(newChar)
-    character = newChar
-    hrp = character:WaitForChild("HumanoidRootPart")
-    serverPosition = hrp.Position
-    realPosition = hrp.Position
-    
-    beamAttachment1:Destroy()
-    beamAttachment1 = Instance.new("Attachment")
-    beamAttachment1.Parent = hrp
-    
-    beam:Destroy()
-    beam = Instance.new("Beam")
-    beam.Name = "DesyncBeam"
-    beam.Color = ColorSequence.new(Color3.fromRGB(255, 50, 50), Color3.fromRGB(255, 150, 50))
-    beam.Transparency = NumberSequence.new(0.3)
-    beam.Width0 = 0.15
-    beam.Width1 = 0.15
-    beam.FaceCamera = true
-    beam.Attachment0 = beamAttachment1
-    beam.Attachment1 = beamAttachment2
-    beam.Parent = hrp
-    
-    DESYNC_ENABLED = false
-    updateUI()
-end)
+-- INITIALIZE
+updateStatus(DESYNC_ENABLED)
+marker.Parent = workspace
+screenGui.Parent = player:WaitForChild("PlayerGui")
 
--- Initial setup
-serverPosition = hrp.Position
-updateUI()
-
-print("[DESYNC] Mobile UI Loaded ✓")
+print("[DESYNC + MOBILE UI] Loaded — Marker at workspace.DesyncMarker | Touch buttons to control (no keybinds)")
